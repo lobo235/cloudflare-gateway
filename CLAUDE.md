@@ -203,7 +203,7 @@ docker build --build-arg VERSION=v1.2.3 -t cloudflare-gateway .
 docker run --env-file .env -p 8080:8080 cloudflare-gateway
 ```
 
-Multi-stage build: `golang:1.24-alpine` → `alpine:3.21`. Statically compiled (`CGO_ENABLED=0`).
+Multi-stage build: `golang:1.26-alpine` → `alpine:3.21`. Statically compiled (`CGO_ENABLED=0`).
 
 ## Known Limitations
 
