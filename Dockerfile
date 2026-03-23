@@ -18,6 +18,9 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /build/cloudflare-gateway .
 
+RUN adduser -D -u 1000 appuser
+USER appuser
+
 EXPOSE 8080
 
 ENTRYPOINT ["/app/cloudflare-gateway"]
