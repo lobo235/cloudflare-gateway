@@ -173,6 +173,154 @@ func TestUpdateDNSRecord(t *testing.T) {
 	}
 }
 
+func TestNewClient_Success(t *testing.T) {
+	client, err := cfclient.NewClient("test-api-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestListZones_Error(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client/v4/zones", func(w http.ResponseWriter, r *http.Request) {
+		writeCloudflareErrorResponse(w, http.StatusInternalServerError, 1000, "internal error")
+	})
+	client, srv := newTestClientAndServer(t, mux)
+	defer srv.Close()
+
+	_, err := client.ListZones(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestGetZoneIDByName_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client/v4/zones", func(w http.ResponseWriter, r *http.Request) {
+		writeCloudflareResponse(w, []map[string]any{
+			{"id": "zone1", "name": "example.com", "status": "active"},
+		})
+	})
+	client, srv := newTestClientAndServer(t, mux)
+	defer srv.Close()
+
+	id, err := client.GetZoneIDByName(context.Background(), "example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != "zone1" {
+		t.Errorf("zone ID = %q, want zone1", id)
+	}
+}
+
+func TestGetZoneIDByName_NotFound(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client/v4/zones", func(w http.ResponseWriter, r *http.Request) {
+		writeCloudflareResponse(w, []map[string]any{})
+	})
+	client, srv := newTestClientAndServer(t, mux)
+	defer srv.Close()
+
+	_, err := client.GetZoneIDByName(context.Background(), "nonexistent.com")
+	if err == nil {
+		t.Fatal("expected error for non-existent zone")
+	}
+}
+
+func TestListDNSRecords_Error(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client/v4/zones/zone1/dns_records", func(w http.ResponseWriter, r *http.Request) {
+		writeCloudflareErrorResponse(w, http.StatusInternalServerError, 1000, "internal error")
+	})
+	client, srv := newTestClientAndServer(t, mux)
+	defer srv.Close()
+
+	_, err := client.ListDNSRecords(context.Background(), "zone1", "", "")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestListDNSRecords_WithFilters(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client/v4/zones/zone1/dns_records", func(w http.ResponseWriter, r *http.Request) {
+		writeCloudflareResponse(w, []map[string]any{
+			{"id": "rec1", "type": "A", "name": "test.example.com", "content": "1.2.3.4", "ttl": 300},
+		})
+	})
+	client, srv := newTestClientAndServer(t, mux)
+	defer srv.Close()
+
+	records, err := client.ListDNSRecords(context.Background(), "zone1", "A", "test.example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+}
+
+func TestGetDNSRecord_Error(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client/v4/zones/zone1/dns_records/rec1", func(w http.ResponseWriter, r *http.Request) {
+		writeCloudflareErrorResponse(w, http.StatusNotFound, 1001, "not found")
+	})
+	client, srv := newTestClientAndServer(t, mux)
+	defer srv.Close()
+
+	_, err := client.GetDNSRecord(context.Background(), "zone1", "rec1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestCreateDNSRecord_Error(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client/v4/zones/zone1/dns_records", func(w http.ResponseWriter, r *http.Request) {
+		writeCloudflareErrorResponse(w, http.StatusBadRequest, 1002, "invalid record")
+	})
+	client, srv := newTestClientAndServer(t, mux)
+	defer srv.Close()
+
+	rec := cfclient.DNSRecord{Type: "CNAME", Name: "new.example.com", Content: "example.com", TTL: 1}
+	_, err := client.CreateDNSRecord(context.Background(), "zone1", rec)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestUpdateDNSRecord_Error(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client/v4/zones/zone1/dns_records/rec1", func(w http.ResponseWriter, r *http.Request) {
+		writeCloudflareErrorResponse(w, http.StatusBadRequest, 1003, "invalid update")
+	})
+	client, srv := newTestClientAndServer(t, mux)
+	defer srv.Close()
+
+	rec := cfclient.DNSRecord{Type: "A", Name: "test.example.com", Content: "5.6.7.8", TTL: 300}
+	_, err := client.UpdateDNSRecord(context.Background(), "zone1", "rec1", rec)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestDeleteDNSRecord_Error(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client/v4/zones/zone1/dns_records/rec1", func(w http.ResponseWriter, r *http.Request) {
+		writeCloudflareErrorResponse(w, http.StatusInternalServerError, 1004, "delete failed")
+	})
+	client, srv := newTestClientAndServer(t, mux)
+	defer srv.Close()
+
+	err := client.DeleteDNSRecord(context.Background(), "zone1", "rec1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestDeleteDNSRecord(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/client/v4/zones/zone1/dns_records/rec1", func(w http.ResponseWriter, r *http.Request) {
@@ -210,4 +358,16 @@ func writeCloudflareResponse(w http.ResponseWriter, result any) {
 		}
 	}
 	json.NewEncoder(w).Encode(resp)
+}
+
+// writeCloudflareErrorResponse writes a Cloudflare-style error response.
+func writeCloudflareErrorResponse(w http.ResponseWriter, status, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]any{
+		"success":  false,
+		"errors":   []map[string]any{{"code": code, "message": message}},
+		"messages": []any{},
+		"result":   nil,
+	})
 }

@@ -288,6 +288,18 @@ func TestListZones_UpstreamError(t *testing.T) {
 
 // --- GET /zones/{zoneID}/records ---
 
+func TestListRecords_UpstreamError(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{
+		listDNSRecordsFunc: func(ctx context.Context, zoneID, rt, rn string) ([]cloudflare.DNSRecord, error) {
+			return nil, errors.New("cloudflare unavailable")
+		},
+	})
+	defer srv.Close()
+	resp := getJSON(t, srv, "/zones/z1/records", true)
+	assertStatus(t, resp, http.StatusBadGateway)
+	assertErrorCode(t, resp, "upstream_error")
+}
+
 func TestListRecords_OK(t *testing.T) {
 	srv := newTestServer(t, &mockCloudflare{
 		listDNSRecordsFunc: func(ctx context.Context, zoneID, rt, rn string) ([]cloudflare.DNSRecord, error) {
@@ -417,6 +429,30 @@ func TestUpdateRecord_OK(t *testing.T) {
 	assertStatus(t, resp, http.StatusOK)
 }
 
+func TestUpdateRecord_InvalidJSON(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{})
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/zones/z1/records/r1", bytes.NewBufferString("not json"))
+	req.Header.Set("Authorization", authHeader())
+	resp, _ := http.DefaultClient.Do(req)
+	assertStatus(t, resp, http.StatusBadRequest)
+	assertErrorCode(t, resp, "invalid_body")
+}
+
+func TestUpdateRecord_UpstreamError(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{
+		updateDNSRecordFunc: func(ctx context.Context, zoneID, recordID string, rec cloudflare.DNSRecord) (cloudflare.DNSRecord, error) {
+			return cloudflare.DNSRecord{}, errors.New("cf error")
+		},
+	})
+	defer srv.Close()
+	resp := putJSON(t, srv, "/zones/z1/records/r1", map[string]any{
+		"type": "A", "name": "test.example.com", "content": "5.6.7.8", "ttl": 300,
+	})
+	assertStatus(t, resp, http.StatusBadGateway)
+	assertErrorCode(t, resp, "upstream_error")
+}
+
 func TestUpdateRecord_MissingFields(t *testing.T) {
 	srv := newTestServer(t, &mockCloudflare{})
 	defer srv.Close()
@@ -474,6 +510,21 @@ func TestListRecordsByZoneName_OK(t *testing.T) {
 	assertStatus(t, resp, http.StatusOK)
 }
 
+func TestListRecordsByZoneName_UpstreamListError(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{
+		getZoneIDByNameFunc: func(ctx context.Context, name string) (string, error) {
+			return "z1", nil
+		},
+		listDNSRecordsFunc: func(ctx context.Context, zoneID, rt, rn string) ([]cloudflare.DNSRecord, error) {
+			return nil, errors.New("cloudflare unavailable")
+		},
+	})
+	defer srv.Close()
+	resp := getJSON(t, srv, "/zones-by-name/example.com/records", true)
+	assertStatus(t, resp, http.StatusBadGateway)
+	assertErrorCode(t, resp, "upstream_error")
+}
+
 func TestListRecordsByZoneName_ZoneNotFound(t *testing.T) {
 	srv := newTestServer(t, &mockCloudflare{
 		getZoneIDByNameFunc: func(ctx context.Context, name string) (string, error) {
@@ -505,6 +556,64 @@ func TestCreateRecordByZoneName_OK(t *testing.T) {
 	assertStatus(t, resp, http.StatusCreated)
 }
 
+func TestCreateRecordByZoneName_ZoneNotFound(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{
+		getZoneIDByNameFunc: func(ctx context.Context, name string) (string, error) {
+			return "", errors.New("not found")
+		},
+	})
+	defer srv.Close()
+	resp := postJSON(t, srv, "/zones-by-name/unknown.com/records", map[string]any{
+		"type": "CNAME", "name": "test.example.com", "content": "example.com", "ttl": 1,
+	})
+	assertStatus(t, resp, http.StatusNotFound)
+	assertErrorCode(t, resp, "not_found")
+}
+
+func TestCreateRecordByZoneName_InvalidJSON(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{
+		getZoneIDByNameFunc: func(ctx context.Context, name string) (string, error) {
+			return "z1", nil
+		},
+	})
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/zones-by-name/example.com/records", bytes.NewBufferString("not json"))
+	req.Header.Set("Authorization", authHeader())
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	assertStatus(t, resp, http.StatusBadRequest)
+	assertErrorCode(t, resp, "invalid_body")
+}
+
+func TestCreateRecordByZoneName_MissingFields(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{
+		getZoneIDByNameFunc: func(ctx context.Context, name string) (string, error) {
+			return "z1", nil
+		},
+	})
+	defer srv.Close()
+	resp := postJSON(t, srv, "/zones-by-name/example.com/records", map[string]any{"type": "CNAME"})
+	assertStatus(t, resp, http.StatusBadRequest)
+	assertErrorCode(t, resp, "missing_fields")
+}
+
+func TestCreateRecordByZoneName_UpstreamError(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{
+		getZoneIDByNameFunc: func(ctx context.Context, name string) (string, error) {
+			return "z1", nil
+		},
+		createDNSRecordFunc: func(ctx context.Context, zoneID string, rec cloudflare.DNSRecord) (cloudflare.DNSRecord, error) {
+			return cloudflare.DNSRecord{}, errors.New("cf error")
+		},
+	})
+	defer srv.Close()
+	resp := postJSON(t, srv, "/zones-by-name/example.com/records", map[string]any{
+		"type": "CNAME", "name": "test.example.com", "content": "example.com", "ttl": 1,
+	})
+	assertStatus(t, resp, http.StatusBadGateway)
+	assertErrorCode(t, resp, "upstream_error")
+}
+
 // --- DELETE /zones-by-name/{zoneName}/records/{recordName} ---
 
 func TestDeleteRecordByZoneName_OK(t *testing.T) {
@@ -526,6 +635,76 @@ func TestDeleteRecordByZoneName_OK(t *testing.T) {
 	assertStatus(t, resp, http.StatusNoContent)
 	if deletedID != "r1" {
 		t.Errorf("deleted record ID = %q, want r1", deletedID)
+	}
+}
+
+func TestDeleteRecordByZoneName_ZoneNotFound(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{
+		getZoneIDByNameFunc: func(ctx context.Context, name string) (string, error) {
+			return "", errors.New("not found")
+		},
+	})
+	defer srv.Close()
+	resp := deleteReq(t, srv, "/zones-by-name/unknown.com/records/test.example.com")
+	assertStatus(t, resp, http.StatusNotFound)
+	assertErrorCode(t, resp, "not_found")
+}
+
+func TestDeleteRecordByZoneName_ListError(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{
+		getZoneIDByNameFunc: func(ctx context.Context, name string) (string, error) {
+			return "z1", nil
+		},
+		listDNSRecordsFunc: func(ctx context.Context, zoneID, rt, rn string) ([]cloudflare.DNSRecord, error) {
+			return nil, errors.New("cf error")
+		},
+	})
+	defer srv.Close()
+	resp := deleteReq(t, srv, "/zones-by-name/example.com/records/test.example.com")
+	assertStatus(t, resp, http.StatusBadGateway)
+	assertErrorCode(t, resp, "upstream_error")
+}
+
+func TestDeleteRecordByZoneName_DeleteUpstreamError(t *testing.T) {
+	srv := newTestServer(t, &mockCloudflare{
+		getZoneIDByNameFunc: func(ctx context.Context, name string) (string, error) {
+			return "z1", nil
+		},
+		listDNSRecordsFunc: func(ctx context.Context, zoneID, rt, rn string) ([]cloudflare.DNSRecord, error) {
+			return []cloudflare.DNSRecord{{ID: "r1", Name: "test.example.com"}}, nil
+		},
+		deleteDNSRecordFunc: func(ctx context.Context, zoneID, recordID string) error {
+			return errors.New("cf delete error")
+		},
+	})
+	defer srv.Close()
+	resp := deleteReq(t, srv, "/zones-by-name/example.com/records/test.example.com")
+	assertStatus(t, resp, http.StatusBadGateway)
+	assertErrorCode(t, resp, "upstream_error")
+}
+
+func TestDeleteRecordByZoneName_MultipleRecords(t *testing.T) {
+	var deletedIDs []string
+	srv := newTestServer(t, &mockCloudflare{
+		getZoneIDByNameFunc: func(ctx context.Context, name string) (string, error) {
+			return "z1", nil
+		},
+		listDNSRecordsFunc: func(ctx context.Context, zoneID, rt, rn string) ([]cloudflare.DNSRecord, error) {
+			return []cloudflare.DNSRecord{
+				{ID: "r1", Name: "test.example.com"},
+				{ID: "r2", Name: "test.example.com"},
+			}, nil
+		},
+		deleteDNSRecordFunc: func(ctx context.Context, zoneID, recordID string) error {
+			deletedIDs = append(deletedIDs, recordID)
+			return nil
+		},
+	})
+	defer srv.Close()
+	resp := deleteReq(t, srv, "/zones-by-name/example.com/records/test.example.com")
+	assertStatus(t, resp, http.StatusNoContent)
+	if len(deletedIDs) != 2 {
+		t.Errorf("deleted %d records, want 2", len(deletedIDs))
 	}
 }
 
